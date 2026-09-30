@@ -1,0 +1,29 @@
+<?xml version="1.0"?>
+<ruleset name="Prolific WordPress plugin">
+	<description>Prolific Digital default coding standard for WordPress plugins.</description>
+
+	<!-- Files are passed on the command line; the shared CI runs `phpcs .` from the plugin root. -->
+	<arg name="extensions" value="php"/>
+	<arg name="colors"/>
+	<arg value="sp"/>
+	<arg name="parallel" value="8"/>
+
+	<exclude-pattern>*/vendor/*</exclude-pattern>
+	<exclude-pattern>*/node_modules/*</exclude-pattern>
+	<exclude-pattern>*/build/*</exclude-pattern>
+	<exclude-pattern>*/.prolific-ci/*</exclude-pattern>
+
+	<rule ref="WordPress-Extra"/>
+
+	<rule ref="PHPCompatibilityWP"/>
+	<config name="testVersion" value="8.4-"/>
+
+	<!-- Matches "Requires at least: 6.5" in the plugin standard. -->
+	<config name="minimum_wp_version" value="6.5"/>
+
+	<!--
+		The text domain is the plugin slug. The shared CI passes it with
+		`runtime-set text_domain <slug>`; a plugin copying this file should add:
+		<rule ref="WordPress.WP.I18n"><properties><property name="text_domain" type="array"><element value="your-slug"/></property></properties></rule>
+	-->
+</ruleset>

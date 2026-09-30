@@ -1,0 +1,49 @@
+# Prolific default .distignore: paths excluded from the release zip.
+# Patterns are rsync --exclude patterns; a leading "/" anchors to the plugin root.
+
+# VCS / CI
+/.git
+/.github
+/.gitignore
+/.gitattributes
+/.prolific-ci
+/.distignore
+
+# Dev tooling config
+/.editorconfig
+/.nvmrc
+/.eslintrc*
+/.prettierrc*
+/.stylelintrc*
+/.wp-env.json
+/phpcs.xml
+/phpcs.xml.dist
+/.phpcs.xml.dist
+/phpunit.xml
+/phpunit.xml.dist
+/composer.json
+/composer.lock
+/package.json
+/package-lock.json
+/webpack.config.js
+/tsconfig.json
+/.storybook
+
+# Dev dependencies and tests (vendor/ is kept: it is built with --no-dev; src/ is kept because composer autoloaders often point at it)
+/node_modules
+/tests
+/bin
+/stories
+/e2e
+/playwright.config.*
+/coverage
+
+# Docs not shipped in the plugin zip
+/README.md
+/CLAUDE.md
+/AGENTS.md
+
+# OS / editor noise
+.DS_Store
+Thumbs.db
+*.log

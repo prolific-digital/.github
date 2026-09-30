@@ -1,0 +1,9 @@
+{
+  "name": "prolific-digital/good-plugin",
+  "description": "Fixture for the Prolific plugin standard checker.",
+  "type": "wordpress-plugin",
+  "license": "GPL-2.0-or-later",
+  "require": {
+    "php": ">=8.4"
+  }
+}

@@ -1,0 +1,170 @@
+# Reusable CI for Prolific WordPress plugins.
+#
+# Caller (.github/workflows/ci.yml in the plugin repo):
+#   jobs:
+#     ci:
+#       uses: prolific-digital/.github/.github/workflows/wp-plugin-ci.yml@main
+#       with: { slug: my-plugin }
+name: WP plugin CI
+
+on:
+  workflow_call:
+    inputs:
+      slug:
+        description: Plugin slug (repo name, folder, main file and text domain).
+        required: true
+        type: string
+      phpcs-strict:
+        description: Fail the build on phpcs errors. Default false (advisory) while legacy code is cleaned up.
+        required: false
+        type: boolean
+        default: false
+      ci-ref:
+        description: Ref of prolific-digital/.github to load bin/ and templates/ from. Keep in sync with the @ref in `uses:`.
+        required: false
+        type: string
+        default: main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: wp-plugin-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  SLUG: ${{ inputs.slug }}
+  PHP_VERSION: '8.4'
+  DEFAULT_NODE_VERSION: '20'
+
+jobs:
+  ci:
+    name: Lint, standard check, tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out plugin
+        uses: actions/checkout@v7
+
+      - name: Check out shared CI tooling
+        uses: actions/checkout@v7
+        with:
+          repository: prolific-digital/.github
+          ref: ${{ inputs.ci-ref }}
+          path: .prolific-ci
+          persist-credentials: false
+
+      - name: Detect project files
+        id: detect
+        run: |
+          has() { if [ -e "$1" ]; then echo true; else echo false; fi; }
+          {
+            echo "composer=$(has composer.json)"
+            echo "composer_test=$( [ -f composer.json ] && jq -e '.scripts.test // empty' composer.json >/dev/null && echo true || echo false )"
+            echo "package=$(has package.json)"
+            echo "package_lock=$(has package-lock.json)"
+            echo "nvmrc=$(has .nvmrc)"
+          } >> "$GITHUB_OUTPUT"
+          phpcs_config=""
+          for f in phpcs.xml .phpcs.xml phpcs.xml.dist .phpcs.xml.dist; do
+            if [ -f "$f" ]; then phpcs_config="$f"; break; fi
+          done
+          if [ -z "$phpcs_config" ]; then
+            phpcs_config=".prolific-ci/templates/phpcs.xml.dist"
+            echo "::notice title=phpcs::No phpcs config in plugin; using the shared default templates/phpcs.xml.dist"
+          fi
+          echo "phpcs_config=$phpcs_config" >> "$GITHUB_OUTPUT"
+          cat "$GITHUB_OUTPUT"
+
+      - name: Set up PHP ${{ env.PHP_VERSION }}
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ env.PHP_VERSION }}
+          tools: composer:v2
+          coverage: none
+
+      - name: PHP syntax check (php -l)
+        run: |
+          find . -type f -name '*.php' \
+            -not -path './vendor/*' -not -path './node_modules/*' \
+            -not -path './.prolific-ci/*' -not -path './.git/*' -print0 \
+            | xargs -0 -r -n 1 -P 4 php -l -d display_errors=1 > "$RUNNER_TEMP/php-lint.log" 2>&1 \
+            || { grep -v '^No syntax errors' "$RUNNER_TEMP/php-lint.log"; exit 1; }
+          echo "$(grep -c '^No syntax errors' "$RUNNER_TEMP/php-lint.log" || true) files OK"
+
+      - name: Plugin standard check (header, versions, readme, required files)
+        run: php .prolific-ci/bin/check-plugin.php . "$SLUG"
+
+      - name: composer validate
+        if: steps.detect.outputs.composer == 'true'
+        run: composer validate --no-check-publish
+
+      - name: Get composer cache dir
+        if: steps.detect.outputs.composer == 'true'
+        id: composer-cache
+        run: echo "dir=$(composer config cache-files-dir)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache composer downloads
+        if: steps.detect.outputs.composer == 'true'
+        uses: actions/cache@v6
+        with:
+          path: ${{ steps.composer-cache.outputs.dir }}
+          key: composer-${{ runner.os }}-${{ hashFiles('composer.lock', 'composer.json') }}
+          restore-keys: composer-${{ runner.os }}-
+
+      - name: composer install
+        if: steps.detect.outputs.composer == 'true'
+        run: composer install --no-interaction --no-progress --prefer-dist
+
+      - name: Install phpcs toolchain
+        run: |
+          dir="$RUNNER_TEMP/phpcs-tools"
+          mkdir -p "$dir"
+          composer --working-dir="$dir" init --no-interaction --name=prolific/phpcs-tools >/dev/null
+          composer --working-dir="$dir" config allow-plugins.dealerdirect/phpcodesniffer-composer-installer true
+          composer --working-dir="$dir" require --no-interaction --no-progress \
+            wp-coding-standards/wpcs:^3 phpcompatibility/phpcompatibility-wp:^2
+          echo "$dir/vendor/bin" >> "$GITHUB_PATH"
+
+      - name: phpcs (WordPress-Extra + PHPCompatibilityWP 8.4-)
+        continue-on-error: ${{ !inputs.phpcs-strict }}
+        env:
+          PHPCS_CONFIG: ${{ steps.detect.outputs.phpcs_config }}
+        run: |
+          phpcs -i
+          phpcs --standard="$PHPCS_CONFIG" \
+            --runtime-set text_domain "$SLUG" \
+            --runtime-set testVersion 8.4- \
+            --ignore='*/vendor/*,*/node_modules/*,*/build/*,*/.prolific-ci/*' \
+            --extensions=php -s --report-full --report-summary .
+
+      - name: composer test
+        if: steps.detect.outputs.composer_test == 'true'
+        run: composer test
+
+      - name: Set up Node
+        if: steps.detect.outputs.package == 'true'
+        uses: actions/setup-node@v7
+        with:
+          node-version: ${{ steps.detect.outputs.nvmrc != 'true' && env.DEFAULT_NODE_VERSION || '' }}
+          node-version-file: ${{ steps.detect.outputs.nvmrc == 'true' && '.nvmrc' || '' }}
+          cache: ${{ steps.detect.outputs.package_lock == 'true' && 'npm' || '' }}
+          package-manager-cache: false
+
+      - name: npm ci
+        if: steps.detect.outputs.package == 'true'
+        run: |
+          if [ -f package-lock.json ]; then
+            npm ci
+          else
+            echo "::warning title=npm::No package-lock.json; falling back to npm install"
+            npm install --no-audit --no-fund
+          fi
+
+      - name: npm run build
+        if: steps.detect.outputs.package == 'true'
+        run: npm run build --if-present
+
+      - name: npm test
+        if: steps.detect.outputs.package == 'true'
+        run: npm run test --if-present
