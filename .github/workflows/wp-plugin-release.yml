@@ -1,0 +1,191 @@
+# Reusable release for Prolific WordPress plugins. Runs on a `v*` tag push.
+#
+# Caller (.github/workflows/release.yml in the plugin repo):
+#   on: { push: { tags: ['v*'] } }
+#   permissions: { contents: write }
+#   jobs:
+#     release:
+#       uses: prolific-digital/.github/.github/workflows/wp-plugin-release.yml@main
+#       with: { slug: my-plugin }
+#
+# Produces {slug}.zip (top-level folder {slug}/, honoring .distignore) and
+# attaches it to a GitHub Release whose body is the CHANGELOG.md section for
+# the version.
+name: WP plugin release
+
+on:
+  workflow_call:
+    inputs:
+      slug:
+        description: Plugin slug (repo name, folder, main file, text domain and zip name).
+        required: true
+        type: string
+      phpcs-strict:
+        description: Run phpcs before packaging and refuse to release on errors. Default false (phpcs is skipped on release).
+        required: false
+        type: boolean
+        default: false
+      ci-ref:
+        description: Ref of prolific-digital/.github to load bin/ and templates/ from. Keep in sync with the @ref in `uses:`.
+        required: false
+        type: string
+        default: main
+
+permissions:
+  contents: write
+
+concurrency:
+  group: wp-plugin-release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  SLUG: ${{ inputs.slug }}
+  TAG: ${{ github.ref_name }}
+  PHP_VERSION: '8.4'
+  DEFAULT_NODE_VERSION: '20'
+
+jobs:
+  release:
+    name: Build and publish ${{ inputs.slug }}.zip
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    steps:
+      - name: Check out plugin
+        uses: actions/checkout@v7
+
+      - name: Check out shared CI tooling
+        uses: actions/checkout@v7
+        with:
+          repository: prolific-digital/.github
+          ref: ${{ inputs.ci-ref }}
+          path: .prolific-ci
+          persist-credentials: false
+
+      - name: Detect project files
+        id: detect
+        run: |
+          has() { if [ -e "$1" ]; then echo true; else echo false; fi; }
+          {
+            echo "composer=$(has composer.json)"
+            echo "package=$(has package.json)"
+            echo "package_lock=$(has package-lock.json)"
+            echo "nvmrc=$(has .nvmrc)"
+          } >> "$GITHUB_OUTPUT"
+          if [ -f .distignore ]; then
+            echo "distignore=.distignore" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning title=.distignore::Plugin has no .distignore; using the shared default templates/.distignore"
+            echo "distignore=.prolific-ci/templates/.distignore" >> "$GITHUB_OUTPUT"
+          fi
+          phpcs_config=".prolific-ci/templates/phpcs.xml.dist"
+          for f in phpcs.xml .phpcs.xml phpcs.xml.dist .phpcs.xml.dist; do
+            if [ -f "$f" ]; then phpcs_config="$f"; break; fi
+          done
+          echo "phpcs_config=$phpcs_config" >> "$GITHUB_OUTPUT"
+          cat "$GITHUB_OUTPUT"
+
+      - name: Set up PHP ${{ env.PHP_VERSION }}
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ env.PHP_VERSION }}
+          tools: composer:v2
+          coverage: none
+
+      - name: Verify tag matches plugin version (and full plugin standard)
+        run: php .prolific-ci/bin/check-plugin.php . "$SLUG" --tag="$TAG"
+
+      - name: phpcs gate (phpcs-strict)
+        if: inputs.phpcs-strict
+        env:
+          PHPCS_CONFIG: ${{ steps.detect.outputs.phpcs_config }}
+        run: |
+          dir="$RUNNER_TEMP/phpcs-tools"
+          mkdir -p "$dir"
+          composer --working-dir="$dir" init --no-interaction --name=prolific/phpcs-tools >/dev/null
+          composer --working-dir="$dir" config allow-plugins.dealerdirect/phpcodesniffer-composer-installer true
+          composer --working-dir="$dir" require --no-interaction --no-progress \
+            wp-coding-standards/wpcs:^3 phpcompatibility/phpcompatibility-wp:^2
+          "$dir/vendor/bin/phpcs" --standard="$PHPCS_CONFIG" \
+            --runtime-set text_domain "$SLUG" \
+            --runtime-set testVersion 8.4- \
+            --ignore='*/vendor/*,*/node_modules/*,*/build/*,*/.prolific-ci/*' \
+            --extensions=php -s --report-summary .
+
+      - name: composer install --no-dev
+        if: steps.detect.outputs.composer == 'true'
+        run: composer install --no-dev --optimize-autoloader --no-interaction --no-progress --prefer-dist
+
+      - name: Set up Node
+        if: steps.detect.outputs.package == 'true'
+        uses: actions/setup-node@v7
+        with:
+          node-version: ${{ steps.detect.outputs.nvmrc != 'true' && env.DEFAULT_NODE_VERSION || '' }}
+          node-version-file: ${{ steps.detect.outputs.nvmrc == 'true' && '.nvmrc' || '' }}
+          cache: ${{ steps.detect.outputs.package_lock == 'true' && 'npm' || '' }}
+          package-manager-cache: false
+
+      - name: npm ci && npm run build
+        if: steps.detect.outputs.package == 'true'
+        run: |
+          if [ -f package-lock.json ]; then
+            npm ci
+          else
+            echo "::warning title=npm::No package-lock.json; falling back to npm install"
+            npm install --no-audit --no-fund
+          fi
+          npm run build --if-present
+
+      - name: Build ${{ inputs.slug }}.zip
+        id: zip
+        env:
+          DISTIGNORE: ${{ steps.detect.outputs.distignore }}
+        run: |
+          stage="$RUNNER_TEMP/dist"
+          rm -rf "$stage" && mkdir -p "$stage/$SLUG"
+          # Strip comments/blank lines; always exclude VCS and the shared tooling checkout.
+          test -f "$DISTIGNORE" || { echo "::error::distignore file '$DISTIGNORE' not found"; exit 1; }
+          # grep exits 1 when every line is a comment (fine); 2 is a real error.
+          grep -vE '^\s*(#|$)' "$DISTIGNORE" > "$RUNNER_TEMP/distignore.rsync" || [ $? -eq 1 ]
+          printf '%s\n' '/.git' '/.prolific-ci' >> "$RUNNER_TEMP/distignore.rsync"
+          rsync -a --exclude-from="$RUNNER_TEMP/distignore.rsync" ./ "$stage/$SLUG/"
+          test -f "$stage/$SLUG/$SLUG.php" || { echo "::error::$SLUG.php was excluded from the zip by $DISTIGNORE"; exit 1; }
+          if [ -f composer.json ] && [ -d vendor ] && [ ! -d "$stage/$SLUG/vendor" ]; then
+            echo "::warning title=.distignore::vendor/ is excluded by $DISTIGNORE; the update checker will be missing from the zip"
+          fi
+          (cd "$stage" && zip -qr -X "$SLUG.zip" "$SLUG")
+          unzip -l "$stage/$SLUG.zip" | tail -n 1
+          echo "path=$stage/$SLUG.zip" >> "$GITHUB_OUTPUT"
+
+      - name: Extract release notes from CHANGELOG.md
+        run: |
+          version="${TAG#v}"
+          notes="$RUNNER_TEMP/release-notes.md"
+          if [ -f CHANGELOG.md ]; then
+            awk -v v="$version" '
+              BEGIN { re = "^##[[:space:]]*\\[?v?" v "\\]?([[:space:]]|$)" }
+              $0 ~ re { on = 1; next }
+              on && /^##[[:space:]]/ { exit }
+              on { print }
+            ' CHANGELOG.md | sed -e '/./,$!d' > "$notes"
+          fi
+          if [ ! -s "$notes" ]; then
+            echo "::warning title=CHANGELOG::No CHANGELOG.md section for $version; using a placeholder body"
+            echo "Release $TAG" > "$notes"
+          fi
+          cat "$notes"
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          ZIP: ${{ steps.zip.outputs.path }}
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release edit "$TAG" --notes-file "$RUNNER_TEMP/release-notes.md"
+            gh release upload "$TAG" "$ZIP" --clobber
+          else
+            gh release create "$TAG" "$ZIP" --verify-tag --title "$TAG" --notes-file "$RUNNER_TEMP/release-notes.md"
+          fi
