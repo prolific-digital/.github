@@ -1,7 +1,7 @@
 <?php
 /**
  * Plugin Name:       Good Plugin
- * Plugin URI:        https://prolificdigital.com/plugins/good-plugin
+ * Plugin URI:        https://prolificdigital.com
  * Description:       Minimal fixture that satisfies the Prolific plugin standard.
  * Version:           1.2.3
  * Requires at least: 6.5

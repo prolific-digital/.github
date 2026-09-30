@@ -28,7 +28,7 @@ const PROLIFIC_SEMVER = '/^\d+\.\d+\.\d+$/';
  */
 const PROLIFIC_HEADER = [
 	'Plugin Name'       => null,
-	'Plugin URI'        => 'https://prolificdigital.com/plugins/{slug}',
+	'Plugin URI'        => 'https://prolificdigital.com',
 	'Description'       => null,
 	'Version'           => null,
 	'Requires at least' => '6.5',

@@ -92,7 +92,7 @@ It prints a PASS/FAIL/WARN report grouped by section, and emits `::error`/`::war
 
 - `<plugin-dir>/<slug>.php` must exist. The slug must be lowercase-hyphen.
 - Header: every contract field must be present, with no duplicates and in the contract's order. The fields with fixed values must match them exactly:
-  - `Plugin URI` must be `https://prolificdigital.com/plugins/<slug>`.
+  - `Plugin URI` must be `https://prolificdigital.com`.
   - `Requires at least` must be `6.5` and `Requires PHP` must be `8.4`.
   - `Author` must be `Prolific Digital` and `Author URI` must be `https://prolificdigital.com`.
   - `License` must be `GPL-2.0-or-later` and `License URI` must be `https://www.gnu.org/licenses/gpl-2.0.html`.
